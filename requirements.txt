@@ -1,0 +1,31 @@
+# LangChain Learning Reference
+# Install: uv pip install -r requirements.txt
+
+# ── Core LangChain ───────────────────────────────────────────────────────────
+langchain
+langchain-community
+langchain-text-splitters
+
+# ── LLM Providers ────────────────────────────────────────────────────────────
+langchain-ollama
+langchain-groq
+
+# ── Vector Stores ─────────────────────────────────────────────────────────────
+chromadb
+faiss-cpu
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+sentence-transformers
+
+# ── Document loaders / parsing ───────────────────────────────────────────────
+pypdf
+beautifulsoup4
+lxml
+
+# ── Tokenization ─────────────────────────────────────────────────────────────
+tiktoken
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+pydantic
+python-dotenv
+httpx
