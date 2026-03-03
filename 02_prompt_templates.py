@@ -10,6 +10,26 @@ Template types:
   - MessagesPlaceholder      : slot for injecting a dynamic list of messages (used for memory)
   - FewShotChatMessagePromptTemplate : inject examples automatically
 
+WHEN YOU NEED THIS:
+  Any time a prompt has dynamic parts. Think of it like a Jinja2 template in
+  Python or a Freemarker template in Java — define the structure once, fill in
+  variables at runtime.
+
+  Real scenarios:
+  - Customer support bot: system = "You are support agent for {company}", user = "{question}"
+  - Code reviewer: system = "Review {language} code for {standards}", human = "{code}"
+  - Multilingual app: inject language preference into every prompt
+
+MESSAGESPLACEHOLDER — specifically needed when:
+  Building a chatbot that remembers prior turns. It's the slot where conversation
+  history is injected so the model sees previous messages in context.
+  Without it, every message is treated as a fresh conversation.
+
+PARTIAL TEMPLATES — specifically needed when:
+  A base prompt needs variants with some fields pre-filled. E.g., one support
+  template for billing, one for technical issues — same structure, different
+  role locked in. Like a base class with overridden constructor params.
+
 Run:  python 02_prompt_templates.py
 """
 
