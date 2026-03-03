@@ -11,6 +11,20 @@ Two model types you'll use constantly:
 
 This file focuses on the raw model interface before we add prompts or chains.
 
+WHEN YOU NEED THIS:
+  Always. This is the entry point to calling any AI model.
+  Think of it like java.net.HttpClient or Python's requests.Session — the raw
+  connection layer. Nothing runs in isolation in production, but everything else
+  (chains, agents, RAG) builds on top of this.
+
+  Real scenario: call a local Ollama model or Groq cloud API and get a response.
+  No templates, no parsing — just "send message, get reply."
+
+WHY ChatModel OVER LLM:
+  ChatModel (ChatOllama) supports system prompts, conversation history, tool
+  calling, and structured output. Plain LLM (OllamaLLM) does not. Always use
+  ChatModel for any real feature.
+
 Run:  python 01_llm_basics.py
 Prereq: Ollama running locally with at least one model pulled
         e.g.  ollama pull llama3.2
