@@ -11,6 +11,24 @@ Parsers to cover:
   - CommaSeparatedListOutputParser : AIMessage → List[str]
   - StructuredOutputParser        : custom field schema
 
+WHEN YOU NEED THIS:
+  Whenever downstream code needs to act on the model's output programmatically.
+  Think of it like JSON deserialization — Jackson in Java, Pydantic in Python,
+  json.loads() in a script. A typed object comes back instead of raw text, so
+  code can call result.severity or result.intent without regex parsing.
+
+  Real scenarios:
+  - Bug triage bot: extract severity, component, steps → route to correct team
+  - Resume parser: extract name, skills[], years_experience → insert into DB
+  - Support classifier: extract intent + urgency → trigger escalation logic
+  - Code generator: extract language + code block → run in sandbox
+
+WHICH PARSER TO USE:
+  - StrOutputParser           → always, as the final step of any text chain
+  - JsonOutputParser          → quick dict extraction, no type safety needed
+  - .with_structured_output() → production use, typed Pydantic model, validated
+  - CommaSeparatedListParser  → when a simple Python list is all that's needed
+
 Run:  python 03_output_parsers.py
 """
 
