@@ -364,3 +364,297 @@ if __name__ == "__main__":
     print("  - RunnablePassthrough() passes the question to both retriever and prompt")
     print("  - Add MessagesPlaceholder + RunnableWithMessageHistory for conversational RAG")
     print("  - Always tune: chunk_size, chunk_overlap, k (top-k), and the prompt wording")
+
+
+# =============================================================================
+# DEEP DIVE: RecursiveCharacterTextSplitter parameters explained
+#
+# The splitter is configured here in build_vectorstore():
+#
+#     splitter = RecursiveCharacterTextSplitter(
+#         chunk_size=400,
+#         chunk_overlap=80,
+#         length_function=len,
+#     )
+#
+# Below each parameter is explained using the actual Kafka entry from KNOWLEDGE_BASE.
+#
+# The Kafka entry (after .strip()) is ~630 characters long:
+#
+#   "Apache Kafka is a distributed event streaming platform originally developed at LinkedIn.
+#    Kafka uses topics to organize messages. Topics are divided into partitions for parallelism.
+#    Each partition is an ordered, immutable log of messages. Kafka brokers store the messages.
+#    Producers publish to topics. Consumers read from topics via consumer groups.
+#    Kafka guarantees at-least-once delivery. With idempotent producers and transactions,
+#    it supports exactly-once semantics. Kafka retains messages for a configurable duration
+#    (default 7 days), even after they are consumed.
+#    Key use cases: real-time data pipelines, event sourcing, log aggregation, stream processing."
+#
+# =============================================================================
+
+
+# ── chunk_size=400 ────────────────────────────────────────────────────────────
+#
+#   The MAXIMUM number of characters each chunk is allowed to contain.
+#   The splitter tries to split at natural boundaries first in this order:
+#     paragraphs (\n\n) → newlines (\n) → sentences (". ") → words (" ") → characters
+#   It picks the largest boundary that still keeps the chunk under the limit.
+#
+#   The Kafka text above is ~630 chars — it exceeds 400, so it splits into 2 chunks.
+#   The first clean sentence boundary before char 400 is after "...consumer groups."
+#   (~347 chars), so CHUNK 1 ends there:
+#
+#   CHUNK 1  (~347 chars)
+#   ┌──────────────────────────────────────────────────────────────────────────┐
+#   │ Apache Kafka is a distributed event streaming platform originally        │
+#   │ developed at LinkedIn. Kafka uses topics to organize messages. Topics    │
+#   │ are divided into partitions for parallelism. Each partition is an        │
+#   │ ordered, immutable log of messages. Kafka brokers store the messages.    │
+#   │ Producers publish to topics. Consumers read from topics via consumer     │
+#   │ groups.                                                                  │
+#   └──────────────────────────────────────────────────────────────────────────┘
+#
+#   CHUNK 2  (remainder of the text)
+#   ┌──────────────────────────────────────────────────────────────────────────┐
+#   │ Kafka guarantees at-least-once delivery. With idempotent producers and   │
+#   │ transactions, it supports exactly-once semantics. Kafka retains messages │
+#   │ for a configurable duration (default 7 days), even after they are        │
+#   │ consumed. Key use cases: real-time data pipelines, event sourcing, log   │
+#   │ aggregation, stream processing.                                           │
+#   └──────────────────────────────────────────────────────────────────────────┘
+#
+#   Why 400 specifically?
+#   - Too large (1000+): chunk contains too many sentences → retrieved chunk
+#     floods the LLM context with irrelevant information, hurting answer quality.
+#   - Too small (50-100): a chunk may not carry a complete thought → retrieval
+#     finds technically matching text that lacks enough context to answer.
+#   - 300-600 chars is the practical sweet spot for dense technical prose.
+#     Tune this based on your document type (code, legal text, chat logs, etc.).
+
+
+# ── chunk_overlap=80 ──────────────────────────────────────────────────────────
+#
+#   The number of characters from the END of the previous chunk that are REPEATED
+#   at the START of the next chunk.
+#   This creates a sliding-window effect so that context is not lost at boundaries.
+#
+#   In the Kafka example, chunk 1 ends with:
+#
+#     "...Consumers read from topics via consumer groups."
+#                                                        ^
+#                                             last sentence of chunk 1
+#
+#   The last ~80 characters of chunk 1 — roughly that sentence — are copied into
+#   the beginning of chunk 2:
+#
+#   CHUNK 2 (with overlap shown explicitly):
+#   ┌──────────────────────────────────────────────────────────────────────────┐
+#   │ [OVERLAP]  Consumers read from topics via consumer groups.               │  ← repeated from chunk 1
+#   │ [NEW]      Kafka guarantees at-least-once delivery. With idempotent ...  │
+#   └──────────────────────────────────────────────────────────────────────────┘
+#
+#   Why does this matter?
+#   Suppose a user asks: "How do consumer groups relate to Kafka guarantees?"
+#   The answer spans the boundary between chunk 1 and chunk 2.
+#   Without overlap: neither chunk alone contains both pieces of information.
+#   With 80-char overlap: chunk 2 opens with the consumer-groups sentence AND
+#   contains the guarantees sentence — so a single retrieved chunk answers it.
+#
+#   Rule of thumb: chunk_overlap = 15-25% of chunk_size.
+#   Here: 80 / 400 = 20%.  Increase overlap when your docs have dense cross-
+#   sentence dependencies; decrease it to save embedding storage.
+
+
+# ── length_function=len ───────────────────────────────────────────────────────
+#
+#   Tells the splitter HOW to measure the "size" of a piece of text.
+#   `len` is Python's built-in function — it counts CHARACTERS (bytes for ASCII).
+#
+#   Example from KNOWLEDGE_BASE:
+#
+#     text = "Apache Kafka is a distributed event streaming platform originally"
+#     len(text)  →  65    (65 characters)
+#
+#   So with chunk_size=400 and length_function=len, a chunk is "full" when it
+#   reaches 400 CHARACTERS, regardless of how many tokens or words that is.
+#
+#   The alternative: count TOKENS instead of characters.
+#
+#     from langchain_text_splitters import RecursiveCharacterTextSplitter
+#     import tiktoken
+#
+#     enc = tiktoken.get_encoding("cl100k_base")   # GPT-4 tokenizer
+#     splitter = RecursiveCharacterTextSplitter(
+#         chunk_size=150,                           # now means 150 TOKENS
+#         chunk_overlap=30,
+#         length_function=lambda text: len(enc.encode(text)),
+#     )
+#
+#   Why does the distinction matter?
+#   LLMs have TOKEN limits, not character limits.
+#   For English prose, 1 token ≈ 4 characters (rough average).
+#   So chunk_size=400 chars ≈ 100 tokens.
+#
+#   With len():   chunk_size=400  →  ~80-120 tokens  (varies by vocabulary)
+#   With tokens:  chunk_size=400  →  exactly 400 tokens
+#
+#   When to use each:
+#   - len() (default): fine for most use cases; simple, fast, no tokenizer needed.
+#   - token counting: use when you need precise control over how much of the
+#     model's context window each chunk consumes (e.g., model has a 512-token
+#     input limit and you're injecting top-k=5 chunks into the prompt).
+
+
+# =============================================================================
+# CHUNKING STRATEGY — by file size and document type
+#
+# The goal of chunking is to break a document into pieces small enough to embed
+# and retrieve individually, but large enough to carry a complete thought.
+#
+# Core problem:
+#   You cannot feed an entire document into an LLM prompt.
+#   You split it into chunks, embed each chunk, store it in a vector DB.
+#   At query time: embed the question → find the most similar chunk vectors
+#   → inject only those chunks into the prompt.
+#
+# Flow:
+#   [Full document]
+#         |
+#         v
+#   [RecursiveCharacterTextSplitter]
+#         |
+#         v
+#   [chunk 1] [chunk 2] [chunk 3] ... [chunk N]
+#         |
+#         v
+#   embed each chunk → store as vector → retrieve top-k at query time
+#
+# =============================================================================
+
+
+# ── Small files (< 2 KB) ──────────────────────────────────────────────────────
+#
+#   Examples: a FAQ page, a short config doc, a single API reference section.
+#
+#   Strategy: keep as one chunk or split into 2-3 large chunks.
+#   Settings:
+#     chunk_size=800-1000
+#     chunk_overlap=100-150
+#
+#   Why:
+#   Small files have tightly coupled content — every sentence relates to the
+#   others. Splitting too finely destroys those relationships. A small file
+#   that gets cut into 10 tiny chunks means each retrieved chunk is a fragment
+#   without enough context to form a useful answer.
+#
+#   Example: a 900-char FAQ entry on Redis TTL.
+#   With chunk_size=400 it splits into 3 chunks. The question "what happens
+#   when a Redis key expires and should I worry about it?" needs all 3 chunks
+#   to answer properly. With chunk_size=900 it stays as one chunk and a single
+#   retrieval hit answers the question completely.
+
+
+# ── Medium files (2 KB – 50 KB) ───────────────────────────────────────────────
+#
+#   Examples: a runbook, a product spec, a technical guide section, a policy doc.
+#
+#   Strategy: standard chunking — one chunk = one coherent thought.
+#   Settings:
+#     chunk_size=400-600
+#     chunk_overlap=80-120  (20% of chunk_size)
+#
+#   This is the sweet spot used in build_vectorstore() above:
+#
+#     splitter = RecursiveCharacterTextSplitter(
+#         chunk_size=400,
+#         chunk_overlap=80,
+#         length_function=len,
+#     )
+#
+#   The splitter respects natural boundaries in this priority order:
+#     paragraphs (\n\n) → newlines (\n) → sentences (". ") → words (" ") → chars
+#   It takes the largest boundary that still fits under chunk_size.
+#
+#   The Kafka entry (~630 chars) splits into exactly 2 chunks at chunk_size=400,
+#   with the overlap carrying the "consumer groups" sentence into chunk 2 so
+#   a question spanning that boundary is still answerable from one chunk.
+#   See the chunk_size and chunk_overlap sections above for the full breakdown.
+
+
+# ── Large files (50 KB – MB range) ───────────────────────────────────────────
+#
+#   Examples: a PDF manual, a legal contract, an architecture RFC, a textbook.
+#
+#   Strategy: load page-by-page first, chunk each page, preserve page number
+#   in metadata. This is the only way to produce citable answers:
+#   "kafka-guide.pdf, page 7" — which is the whole point of RAG in production.
+#
+#   Settings:
+#     chunk_size=500
+#     chunk_overlap=100
+#
+#   How to do it:
+#
+#     from langchain_community.document_loaders import PyPDFLoader
+#
+#     loader = PyPDFLoader("kafka-guide.pdf")
+#     pages = loader.load()
+#     # Each page is a Document with metadata={"page": 3, "source": "kafka-guide.pdf"}
+#
+#     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+#     chunks = splitter.split_documents(pages)
+#     # Each chunk inherits {"page": 3, "source": "kafka-guide.pdf"} from its page
+#
+#   The metadata survives into the vector store. When you retrieve chunks you
+#   can surface citations directly:
+#
+#     for doc in retrieved_chunks:
+#         source = doc.metadata.get("source")   # "kafka-guide.pdf"
+#         page   = doc.metadata.get("page")     # 7
+#         print(f"[{source}, page {page}]: {doc.page_content[:80]}...")
+#
+#   Why page numbers matter:
+#   Without page metadata, a correct answer has no citation — unverifiable and
+#   unusable in regulated domains (legal, compliance, internal policy Q&A).
+#   With page metadata, the answer becomes: "According to kafka-guide.pdf page 7,
+#   consumer groups allow parallel reads across partitions."
+#
+#   For very large PDFs (100+ pages), consider chunking per section heading
+#   instead of per page using MarkdownHeaderTextSplitter or similar, so that
+#   the metadata carries a section name ("3.2 Consumer Groups") in addition
+#   to the page number.
+
+
+# ── Failure modes to avoid ────────────────────────────────────────────────────
+#
+#   Chunks too large (1000+ chars):
+#     Each chunk floods the LLM with irrelevant sentences.
+#     The LLM sees the right passage buried in noise → answer quality drops.
+#
+#   Chunks too small (< 100 chars):
+#     Each chunk is a fragment without a complete thought.
+#     Retrieval finds the right area of the document but can't form an answer.
+#
+#   Zero overlap:
+#     A fact that spans a boundary disappears from both chunks.
+#     The retriever finds neither chunk as the best match → the answer is missed.
+#
+#   No metadata on large files:
+#     Correct answer, no citation. Unverifiable in production.
+#     Always preserve source and page at ingestion time, not after.
+
+
+# ── Quick reference ───────────────────────────────────────────────────────────
+#
+#   File size     chunk_size    chunk_overlap    notes
+#   ──────────    ──────────    ─────────────    ──────────────────────────────
+#   Small         800-1000      100-150          fewer, larger chunks
+#   Medium        400-600       80-120           standard; one chunk = one idea
+#   Large (PDF)   400-500       80-100           page metadata required
+#
+#   chunk_overlap = ~20% of chunk_size  (rule of thumb for all sizes)
+#   k (top-k retrieved at query time)  = 3-5
+#
+#   Tune chunk_size first. If answers are noisy → smaller chunks.
+#   If answers are incomplete → larger chunks or more overlap.
+# =============================================================================
